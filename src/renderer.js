@@ -496,9 +496,11 @@ export class Renderer {
     const bx = Math.cos(bob) * 0.012;
     const by = Math.abs(Math.sin(bob)) * 0.014;
     // Place the grip at the lower-right of the view; swing dips it down/forward.
+    // Negative rotX so the blade (local +Y) sweeps toward -Z (into the screen,
+    // away from the camera) — a forward chop, not back over the shoulder.
     let base = mat4Translate(0.5 + bx, -0.5 + by - arc * 0.18, -0.95);
     base = mat4Mul(base, mat4RotY(-0.42));
-    base = mat4Mul(base, mat4RotX(0.18 + arc * 1.25));
+    base = mat4Mul(base, mat4RotX(0.18 - arc * 1.25));
 
     const SKIN = [0.86, 0.66, 0.5];
     // Hand + forearm (shared by both item types).

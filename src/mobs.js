@@ -24,7 +24,7 @@ export const MOB_TYPES = [
     contactDmg: 4, contactKnock: 7, contactReach: 1.1, contactCd: 0.8,
     animRate: 6,
     aerial: false,
-    spawn: { maxLight: 0.32, weight: 1 }, // night/dark only
+    spawn: { maxLight: 0.32, weight: 1, cap: 3 }, // night/dark only
     model: {
       parts: [
         { off: [-0.16, 0, 0], size: [0.18, 1.05, 0.2], color: [0.06, 0.06, 0.09] }, // leg L
@@ -47,7 +47,7 @@ export const MOB_TYPES = [
     hazardR: 2.2, hazardTtl: 5, hazardDps: 4,
     animRate: 4,
     aerial: false,
-    spawn: { maxLight: 1, weight: 1 }, // any time
+    spawn: { maxLight: 1, weight: 1, cap: 3 }, // any time
     model: {
       parts: [
         { off: [0, 0.22, 0], size: [1.4, 0.8, 1.4], color: [0.22, 0.34, 0.18] },   // body
@@ -72,7 +72,7 @@ export const MOB_TYPES = [
     animRate: 18,
     aerial: true,
     splitInto: 2, splitGen: 1,
-    spawn: { maxLight: 0.5, weight: 1 }, // dusk/night
+    spawn: { maxLight: 0.5, weight: 1, cap: 4 }, // dusk/night
     model: {
       parts: [
         { off: [0, 0.18, 0], size: [0.38, 0.32, 0.6], color: [0.62, 0.76, 0.96] }, // body
@@ -191,13 +191,33 @@ export function maybeSpawn(mobs, ctx, policy) {
   if (ctx.rng() > policy.rate * ctx.dt) return spawned;
   const daylight = daylightAt(ctx.dayTime);
 
-  // Pick a type whose light gating allows it right now.
+  // Current population by type, so the always-eligible daytime mob can't fill
+  // the whole global cap and starve the night-only types (per-type caps).
+  const counts = new Array(MOB_TYPES.length).fill(0);
+  for (const m of mobs) counts[m.type]++;
+
+  // Eligible = light gating allows it now AND it is under its own per-type cap.
   const allowed = [];
+  let totalW = 0;
   for (let i = 0; i < MOB_TYPES.length; i++) {
-    if (daylight <= MOB_TYPES[i].spawn.maxLight) allowed.push(i);
+    const sp = MOB_TYPES[i].spawn;
+    if (daylight <= sp.maxLight && counts[i] < (sp.cap ?? policy.cap)) {
+      allowed.push(i);
+      totalW += sp.weight;
+    }
   }
   if (!allowed.length) return spawned;
-  const type = allowed[(ctx.rng() * allowed.length) | 0];
+
+  // Weighted random pick among the eligible types (honours spawn.weight).
+  let rw = ctx.rng() * totalW;
+  let type = allowed[allowed.length - 1];
+  for (const i of allowed) {
+    rw -= MOB_TYPES[i].spawn.weight;
+    if (rw <= 0) {
+      type = i;
+      break;
+    }
+  }
 
   // Place on a ring around a random living observer.
   const live = ctx.observers.filter((o) => o.alive);
