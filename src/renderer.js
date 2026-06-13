@@ -1,5 +1,8 @@
-// Raw WebGL2 renderer: one program for the world (opaque + water passes)
-// and a tiny line program for the targeted-block highlight.
+// Raw WebGL2 renderer: one program for the world (opaque + water passes),
+// a tiny line program for the targeted-block highlight, and a flat-shaded
+// box program for remote players (multiplayer avatars).
+
+import { mat4Mul, mat4Translate, mat4RotY } from './math.js';
 
 const WORLD_VS = `#version 300 es
 layout(location=0) in vec3 aPos;
@@ -50,6 +53,27 @@ precision highp float;
 out vec4 outColor;
 void main() { outColor = vec4(0.05, 0.05, 0.05, 1.0); }`;
 
+// Flat-shaded boxes for remote players (no atlas/AO/fog — just a solid color
+// per box with baked per-face shading so the cube reads as 3D).
+const AVATAR_VS = `#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in float aShade;
+uniform mat4 uProj;
+uniform mat4 uView;
+uniform mat4 uModel;
+out float vShade;
+void main() {
+  gl_Position = uProj * uView * uModel * vec4(aPos, 1.0);
+  vShade = aShade;
+}`;
+
+const AVATAR_FS = `#version 300 es
+precision highp float;
+in float vShade;
+uniform vec3 uColor;
+out vec4 outColor;
+void main() { outColor = vec4(uColor * vShade, 1.0); }`;
+
 function compile(gl, type, src) {
   const sh = gl.createShader(type);
   gl.shaderSource(sh, src);
@@ -69,6 +93,25 @@ function link(gl, vs, fs) {
     throw new Error('Program link error: ' + gl.getProgramInfoLog(prog));
   }
   return prog;
+}
+
+// Interleaved [x,y,z,shade] for a unit box: X,Z in [-0.5,0.5], Y in [0,1].
+// Face shades match the world mesher (top 1.0, bottom 0.5, ±X 0.8, ±Z 0.65).
+function buildBoxData() {
+  const faces = [
+    { s: 1.0, q: [[-0.5, 1, -0.5], [-0.5, 1, 0.5], [0.5, 1, 0.5], [0.5, 1, -0.5]] }, // top
+    { s: 0.5, q: [[-0.5, 0, 0.5], [-0.5, 0, -0.5], [0.5, 0, -0.5], [0.5, 0, 0.5]] }, // bottom
+    { s: 0.8, q: [[0.5, 0, 0.5], [0.5, 0, -0.5], [0.5, 1, -0.5], [0.5, 1, 0.5]] }, // +X
+    { s: 0.8, q: [[-0.5, 0, -0.5], [-0.5, 0, 0.5], [-0.5, 1, 0.5], [-0.5, 1, -0.5]] }, // -X
+    { s: 0.65, q: [[-0.5, 0, 0.5], [0.5, 0, 0.5], [0.5, 1, 0.5], [-0.5, 1, 0.5]] }, // +Z
+    { s: 0.65, q: [[0.5, 0, -0.5], [-0.5, 0, -0.5], [-0.5, 1, -0.5], [0.5, 1, -0.5]] }, // -Z
+  ];
+  const data = [];
+  for (const f of faces) {
+    const [a, b, c, d] = f.q;
+    for (const v of [a, b, c, a, c, d]) data.push(v[0], v[1], v[2], f.s);
+  }
+  return new Float32Array(data);
 }
 
 export class Renderer {
@@ -119,6 +162,26 @@ export class Renderer {
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0);
     gl.bindVertexArray(null);
 
+    // Avatar program: a unit box ([-0.5,0.5] in X/Z, [0,1] in Y) with baked
+    // per-face shading, reused with a per-player model matrix and color.
+    this.avatarProg = link(gl, AVATAR_VS, AVATAR_FS);
+    this.au = {
+      proj: gl.getUniformLocation(this.avatarProg, 'uProj'),
+      view: gl.getUniformLocation(this.avatarProg, 'uView'),
+      model: gl.getUniformLocation(this.avatarProg, 'uModel'),
+      color: gl.getUniformLocation(this.avatarProg, 'uColor'),
+    };
+    this.avatarVao = gl.createVertexArray();
+    gl.bindVertexArray(this.avatarVao);
+    const cubeVbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, cubeVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, buildBoxData(), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 16, 12);
+    gl.bindVertexArray(null);
+
     gl.enable(gl.DEPTH_TEST);
     this.meshes = new Map();
   }
@@ -160,6 +223,11 @@ export class Renderer {
     this.meshes.delete(key);
   }
 
+  // Free every chunk's GPU buffers (used when regenerating the world).
+  clearMeshes() {
+    for (const key of [...this.meshes.keys()]) this.removeChunk(key);
+  }
+
   resize() {
     const c = this.gl.canvas;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -197,6 +265,14 @@ export class Renderer {
       }
     }
 
+    // Remote players: opaque boxes, drawn after terrain and before water so
+    // they occlude correctly and water still blends over them. This switches
+    // the active program, so re-bind the world program for the water pass.
+    if (s.players && s.players.length) {
+      this.drawPlayers(s.players, s.proj, s.view);
+      gl.useProgram(this.prog); // world-program uniforms persist from above
+    }
+
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
@@ -219,5 +295,53 @@ export class Renderer {
       gl.drawArrays(gl.LINES, 0, 24);
     }
     gl.bindVertexArray(null);
+  }
+
+  // Each player: { pos:[feetX,feetY,feetZ], yaw, color:[r,g,b] }. Drawn as a
+  // body box + a head box scaled/placed to the 1.8-tall player AABB.
+  drawPlayers(players, proj, view) {
+    const gl = this.gl;
+    gl.useProgram(this.avatarProg);
+    gl.uniformMatrix4fv(this.au.proj, false, proj);
+    gl.uniformMatrix4fv(this.au.view, false, view);
+    gl.bindVertexArray(this.avatarVao);
+    for (const p of players) {
+      const base = mat4Mul(mat4Translate(p.pos[0], p.pos[1], p.pos[2]), mat4RotY(p.yaw));
+      gl.uniform3fv(this.au.color, p.color);
+      // Body: 0.6 wide, 1.2 tall, starting at the feet.
+      this.drawBox(base, 0, 0.6, 1.2, 0.3);
+      // Head: 0.5 cube on top of the body.
+      gl.uniform3fv(this.au.color, p.headColor || p.color);
+      this.drawBox(base, 1.2, 0.5, 0.5, 0.5);
+    }
+    gl.bindVertexArray(null);
+  }
+
+  drawBox(base, yOffset, w, h, d) {
+    const gl = this.gl;
+    // model = base · translate(0,yOffset,0) · scale(w,h,d)  (box Y spans [0,1]).
+    const scale = new Float32Array([w, 0, 0, 0, 0, h, 0, 0, 0, 0, d, 0, 0, yOffset, 0, 1]);
+    gl.uniformMatrix4fv(this.au.model, false, mat4Mul(base, scale));
+    gl.drawArrays(gl.TRIANGLES, 0, 36);
+  }
+
+  // Project a world point to CSS-pixel screen coords using the live proj·view.
+  // Returns { x, y, visible }; visible is false when behind the camera or
+  // off-screen, so callers can hide nameplates instead of mis-placing them.
+  projectPoint(point, proj, view) {
+    const m = mat4Mul(proj, view); // column-major: m[col*4 + row]
+    const x = point[0], y = point[1], z = point[2];
+    const cx = m[0] * x + m[4] * y + m[8] * z + m[12];
+    const cy = m[1] * x + m[5] * y + m[9] * z + m[13];
+    const cw = m[3] * x + m[7] * y + m[11] * z + m[15];
+    if (cw <= 0) return { x: 0, y: 0, visible: false }; // at/behind camera
+    const ndcX = cx / cw;
+    const ndcY = cy / cw;
+    const c = this.gl.canvas;
+    return {
+      x: (ndcX * 0.5 + 0.5) * c.clientWidth,
+      y: (1 - (ndcY * 0.5 + 0.5)) * c.clientHeight,
+      visible: ndcX >= -1 && ndcX <= 1 && ndcY >= -1 && ndcY <= 1,
+    };
   }
 }

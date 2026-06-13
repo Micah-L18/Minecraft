@@ -102,3 +102,144 @@ html, body {
   border-spacing: 14px 3px;
   text-align: left;
 }
+
+#menu-controls {
+  margin-top: 20px;
+  cursor: default;
+  font-size: 13px;
+  color: #ccc;
+}
+#menu-controls button {
+  font-family: inherit;
+  font-size: 13px;
+  color: #eee;
+  background: #2a7d2a;
+  border: 2px solid #3fae3f;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+#menu-controls button:hover { background: #34963a; }
+#seed-row {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+#seed-row input {
+  font-family: inherit;
+  font-size: 13px;
+  width: 120px;
+  padding: 5px 6px;
+  color: #eee;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid #556;
+  cursor: text;
+}
+#seed-row button {
+  background: rgba(0, 0, 0, 0.4);
+  border-color: #556;
+  padding: 5px 10px;
+}
+#seed-row button:hover { background: rgba(0, 0, 0, 0.6); }
+#seed-line { margin: 10px 0 0; color: #9f9; }
+
+#menu-controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+#mp-controls {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid #334;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+#mp-controls .mp-title {
+  margin: 0;
+  color: #9cf;
+  letter-spacing: 2px;
+}
+#mp-controls input {
+  font-family: inherit;
+  font-size: 13px;
+  width: 230px;
+  padding: 5px 6px;
+  color: #eee;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid #556;
+  cursor: text;
+}
+#mp-controls button {
+  background: #2a5d7d;
+  border: 2px solid #3f8eae;
+}
+#mp-controls button:hover { background: #34769a; }
+
+/* In-world multiplayer HUD: nameplates, chat, connection banner. */
+#nameplates {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 5;
+}
+.nameplate {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  white-space: nowrap;
+  font-size: 12px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 1px 6px;
+  border-radius: 3px;
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.9);
+}
+
+#netstatus {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20; /* above the start-screen overlay so connection status shows */
+  color: #fff;
+  font-size: 13px;
+  padding: 5px 12px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 4px;
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.8);
+}
+
+#chat {
+  position: fixed;
+  left: 10px;
+  bottom: 64px;
+  width: 360px;
+  max-width: 60vw;
+  pointer-events: none;
+  z-index: 6;
+}
+#chatlog {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 160px;
+  overflow: hidden;
+  font-size: 13px;
+  color: #fff;
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.9);
+}
+#chatlog div { background: rgba(0, 0, 0, 0.3); padding: 1px 5px; align-self: flex-start; border-radius: 2px; }
+#chatinput {
+  margin-top: 4px;
+  font-size: 13px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 3px 6px;
+  border-radius: 2px;
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.9);
+  min-height: 20px;
+}

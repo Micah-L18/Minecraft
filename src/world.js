@@ -12,10 +12,18 @@ const idx = (lx, y, lz) => lx + lz * CX + y * CX * CZ;
 
 export class World {
   constructor(seed = 1337) {
-    this.seed = seed | 0;
     this.chunks = new Map();
-    this.noise = new Perlin(seed);
-    this.cave = new Perlin(seed + 999);
+    this.reset(seed);
+  }
+
+  // Re-seed the noise generators and drop all chunks so this same World
+  // instance can be reused for a brand-new map (every closure in main.js
+  // keeps referencing this object).
+  reset(seed) {
+    this.seed = seed | 0;
+    this.noise = new Perlin(this.seed);
+    this.cave = new Perlin(this.seed + 999);
+    this.chunks.clear();
   }
 
   key(cx, cz) {

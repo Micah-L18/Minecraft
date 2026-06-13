@@ -9,8 +9,14 @@
 <body>
   <canvas id="glcanvas"></canvas>
   <div id="crosshair"></div>
+  <div id="nameplates"></div>
+  <div id="netstatus" class="hidden"></div>
   <div id="hotbar"></div>
   <div id="debug"></div>
+  <div id="chat">
+    <div id="chatlog"></div>
+    <div id="chatinput" class="hidden"></div>
+  </div>
   <div id="overlay">
     <div id="overlay-inner">
       <h1>VOXELCRAFT</h1>
@@ -24,9 +30,27 @@
         <tr><td>Pick block</td><td>Middle mouse</td></tr>
         <tr><td>Select block</td><td>1&ndash;9 / scroll</td></tr>
         <tr><td>Toggle fly</td><td>F &nbsp;(Space/Shift = up/down)</td></tr>
+        <tr><td>New world</td><td>N &nbsp;(single-player only)</td></tr>
+        <tr><td>Chat</td><td>Enter / T &nbsp;(multiplayer)</td></tr>
         <tr><td>Debug info</td><td>F3</td></tr>
         <tr><td>Release mouse</td><td>Esc</td></tr>
       </table>
+      <div id="menu-controls">
+        <button id="new-world" type="button">New Random World</button>
+        <div id="seed-row">
+          <span>Seed:</span>
+          <input id="seed-input" type="text" inputmode="numeric" spellcheck="false" autocomplete="off">
+          <button id="load-seed" type="button">Load Seed</button>
+        </div>
+        <p id="seed-line">Current seed: <span id="seed-display">—</span></p>
+        <div id="mp-controls">
+          <p class="mp-title">Multiplayer</p>
+          <input id="mp-server" type="text" spellcheck="false" autocomplete="off" placeholder="ws://localhost:25565">
+          <input id="mp-room" type="text" spellcheck="false" autocomplete="off" placeholder="room code (optional)">
+          <input id="mp-name" type="text" spellcheck="false" autocomplete="off" placeholder="name">
+          <button id="mp-join" type="button">Join Multiplayer</button>
+        </div>
+      </div>
     </div>
   </div>
   <script type="module" src="src/main.js"></script>
