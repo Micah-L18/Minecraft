@@ -1,0 +1,12 @@
+{
+  "name": "voxelcraft",
+  "version": "1.0.0",
+  "description": "A Minecraft-style voxel sandbox built from scratch with vanilla JS and WebGL2.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "server": "node server/server.js",
+    "client": "python3 -m http.server 8000",
+    "start": "trap 'kill 0' INT TERM EXIT; node server/server.js & python3 -m http.server 8000 & wait"
+  }
+}

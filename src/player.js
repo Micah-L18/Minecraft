@@ -17,6 +17,8 @@ export class Player {
     this.onGround = false;
     this.inWater = false;
     this.fly = false;
+    this.maxHp = 20;
+    this.hp = 20;
   }
 
   update(dt, input, world) {

@@ -10,7 +10,11 @@
   <canvas id="glcanvas"></canvas>
   <div id="crosshair"></div>
   <div id="nameplates"></div>
+  <div id="mobplates"></div>
+  <div id="latchveil" class="hidden"></div>
+  <div id="damageflash"></div>
   <div id="netstatus" class="hidden"></div>
+  <div id="healthbar"></div>
   <div id="hotbar"></div>
   <div id="debug"></div>
   <div id="chat">
@@ -25,8 +29,10 @@
         <tr><td>Move</td><td>W A S D</td></tr>
         <tr><td>Jump / swim up</td><td>Space</td></tr>
         <tr><td>Sprint</td><td>Ctrl</td></tr>
-        <tr><td>Break block</td><td>Left mouse</td></tr>
+        <tr><td>Break block / swing sword</td><td>Left mouse</td></tr>
         <tr><td>Place block</td><td>Right mouse</td></tr>
+        <tr><td>Attack mobs</td><td>Hold sword (slot 1), left mouse</td></tr>
+        <tr><td>Shake off a Gloamwing</td><td>Turn fast (move mouse)</td></tr>
         <tr><td>Pick block</td><td>Middle mouse</td></tr>
         <tr><td>Select block</td><td>1&ndash;9 / scroll</td></tr>
         <tr><td>Toggle fly</td><td>F &nbsp;(Space/Shift = up/down)</td></tr>
@@ -46,9 +52,10 @@
         <div id="mp-controls">
           <p class="mp-title">Multiplayer</p>
           <input id="mp-server" type="text" spellcheck="false" autocomplete="off" placeholder="ws://localhost:25565">
-          <input id="mp-room" type="text" spellcheck="false" autocomplete="off" placeholder="room code (optional)">
+          <input id="mp-room" type="text" spellcheck="false" autocomplete="off" placeholder="room code (leave blank to create)">
           <input id="mp-name" type="text" spellcheck="false" autocomplete="off" placeholder="name">
-          <button id="mp-join" type="button">Join Multiplayer</button>
+          <button id="mp-create" type="button">Create New World</button>
+          <button id="mp-join" type="button">Join World</button>
         </div>
       </div>
     </div>

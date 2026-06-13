@@ -11,6 +11,7 @@ import { Player } from './player.js';
 import { Input } from './input.js';
 import { raycast } from './raycast.js';
 import { Net } from './net.js';
+import * as Mobs from './mobs.js';
 
 const GEN_R = 6;     // generate terrain within this chunk radius
 const MESH_R = 5;    // mesh/draw within this radius (needs generated neighbors for AO)
@@ -98,6 +99,8 @@ function spawn() {
   player.fly = false;
   player.onGround = false;
   player.inWater = false;
+  player.hp = player.maxHp;
+  dead = false;
 }
 
 // Build a fresh map: re-seed the world, free GPU buffers, respawn, and reflect
@@ -123,10 +126,50 @@ function bootSinglePlayer(seed) {
   syncSeedUI();
 }
 
-const HOTBAR = [B.GRASS, B.DIRT, B.STONE, B.PLANKS, B.LOG, B.LEAVES, B.GLASS, B.SAND, B.COBBLE];
+// Hotbar slots are now descriptors so a non-block tool (the sword) can sit
+// alongside block items. Slot 1 is the sword used to fight mobs.
+const SWORD = { name: 'Sword', dmg: 6, range: 3.3, cone: 0.6, cd: 0.4, knock: 8 };
+const HOTBAR = [
+  { kind: 'tool', tool: SWORD },
+  { kind: 'block', id: B.GRASS },
+  { kind: 'block', id: B.DIRT },
+  { kind: 'block', id: B.STONE },
+  { kind: 'block', id: B.PLANKS },
+  { kind: 'block', id: B.LOG },
+  { kind: 'block', id: B.GLASS },
+  { kind: 'block', id: B.SAND },
+  { kind: 'block', id: B.COBBLE },
+];
 let selected = 0;
 const slots = buildHotbarUI();
 updateHotbarSel();
+
+// Mob state. In single-player these local arrays are the authority (the client
+// runs Mobs.stepMobs each frame). In multiplayer they stay empty — the server
+// is authoritative and we render interpolated snapshots from `remoteMobs`.
+const mobs = [];
+const hazards = [];
+const projectiles = [];
+let mobNextId = 1;
+const spMobId = () => mobNextId++;
+const SP_POLICY = { cap: 10, rate: 0.6, minR: 12, maxR: 30 };
+const LOCAL_ID = 0; // the local player's observer id, in SP
+
+// Multiplayer mob snapshots, interpolated like remotePlayers.
+const remoteMobs = new Map(); // id -> { type, prev, next, tPrev, tNext, hp, maxHp, scale, gen, latchedTo, flags, anim, cur }
+let mpHazards = [];
+let mpProjectiles = [];
+const mobBars = new Map(); // id -> health-bar element
+
+let swingCd = 0;
+let shakeAccum = 0;
+let flashTimer = 0;
+let dead = false;
+let deathTimer = 0;
+// First-person viewmodel animation state.
+const SWING_DUR = 0.26;
+let swingAnimT = 0; // counts down during a swing
+let bobPhase = 0;   // advances while moving, for a subtle hand bob
 
 let dayTime = 0.1;
 let breakCd = 0;
@@ -172,16 +215,25 @@ const mpName = document.getElementById('mp-name');
 if (mpServer) mpServer.value = serverUrl || 'ws://' + (location.hostname || 'localhost') + ':25565';
 if (mpRoom) mpRoom.value = roomCode;
 if (mpName && params.get('name')) mpName.value = params.get('name');
-document.getElementById('mp-join')?.addEventListener('click', () => {
+// Connect to a multiplayer room. `room` is the code to join; pass null to let
+// the caller's value (or the server) decide. Joining a code that doesn't exist
+// yet creates that world on the server, so "create" is just "join a new code".
+function connectMP(room) {
   const sv = (mpServer?.value || '').trim();
   if (!sv) return;
   const q = new URLSearchParams();
   q.set('server', sv);
-  const rm = (mpRoom?.value || '').trim();
   const nm = (mpName?.value || '').trim();
-  if (rm) q.set('room', rm);
+  if (room) q.set('room', room);
   if (nm) q.set('name', nm);
   location.search = '?' + q.toString();
+}
+// Create: generate a fresh, unused room code so the server spins up a new world.
+document.getElementById('mp-create')?.addEventListener('click', () => {
+  connectMP(randomRoomCode());
+});
+document.getElementById('mp-join')?.addEventListener('click', () => {
+  connectMP((mpRoom?.value || '').trim() || null);
 });
 
 // HUD elements for multiplayer (nameplates, chat, status banner).
@@ -189,6 +241,14 @@ const nameplatesEl = document.getElementById('nameplates');
 const chatLogEl = document.getElementById('chatlog');
 const chatInputEl = document.getElementById('chatinput');
 const netStatusEl = document.getElementById('netstatus');
+
+// Combat HUD: health pips, mob health bars, screen flash, Gloamwing veil.
+const healthBarEl = document.getElementById('healthbar');
+const mobPlatesEl = document.getElementById('mobplates');
+const damageFlashEl = document.getElementById('damageflash');
+const latchVeilEl = document.getElementById('latchveil');
+const healthPips = buildHealthUI();
+updateHealthUI();
 
 // Chat input is captured manually (no real <input> focus) so opening it never
 // drops pointer lock and pops the click-to-play overlay.
@@ -225,6 +285,7 @@ requestAnimationFrame(function frame(now) {
   }
 
   const active = input.locked && !chatOpen; // gameplay input enabled?
+  const canAct = active && !dead; // movement/combat (frozen briefly on death)
   if (active) {
     player.yaw -= ev.dx * MOUSE_SENS;
     player.pitch = Math.max(-1.55, Math.min(1.55, player.pitch - ev.dy * MOUSE_SENS));
@@ -249,7 +310,7 @@ requestAnimationFrame(function frame(now) {
     if (!debugVisible) debugEl.textContent = '';
   }
 
-  if (active) player.update(dt, input, world);
+  if (canAct) player.update(dt, input, world);
   if (isMP && net) net.sendMove(player.pos, player.yaw, player.pitch);
   streamChunks();
 
@@ -260,11 +321,19 @@ requestAnimationFrame(function frame(now) {
 
   breakCd -= dt;
   placeCd -= dt;
-  if (!input.buttons[0]) breakCd = 0;
+  swingCd -= dt;
+  if (!input.buttons[0]) { breakCd = 0; swingCd = 0; }
   if (!input.buttons[2]) placeCd = 0;
-  if (active && target) {
+  const held = HOTBAR[selected];
+  if (canAct && held.kind === 'tool') {
+    // Holding the sword: left mouse swings at mobs; it can't break/place blocks.
+    if (input.buttons[0] && swingCd <= 0) {
+      swingCd = held.tool.cd;
+      doSwing(eye, dir, held.tool);
+    }
+  } else if (canAct && target) {
     if (ev.pressed.has('Mouse1')) {
-      const i = HOTBAR.indexOf(target.id);
+      const i = HOTBAR.findIndex((s) => s.kind === 'block' && s.id === target.id);
       if (i >= 0) {
         selected = i;
         updateHotbarSel();
@@ -279,7 +348,7 @@ requestAnimationFrame(function frame(now) {
       const pz = target.z + target.nz;
       const cur = world.getBlock(px, py, pz);
       if ((cur === B.AIR || cur === B.WATER) && py >= 0 && py < CY && !intersectsPlayer(px, py, pz)) {
-        applyEdit(px, py, pz, HOTBAR[selected]);
+        applyEdit(px, py, pz, held.id);
         placeCd = 0.25;
       }
     }
@@ -303,10 +372,30 @@ requestAnimationFrame(function frame(now) {
     fogColor = lerp3([0, 0, 0], [0.1, 0.22, 0.45], sun);
   }
 
+  // Combat: death/respawn timer, mob simulation (SP) or interpolation (MP),
+  // damage flash and the Gloamwing latch veil.
+  if (dead) {
+    deathTimer -= dt;
+    if (deathTimer <= 0) respawn();
+  }
+  const mobData = updateMobs(dt, now, eye, dir, canAct);
+  if (flashTimer > 0) {
+    flashTimer -= dt;
+    if (damageFlashEl) damageFlashEl.classList.add('hit');
+  } else if (!dead && damageFlashEl) {
+    damageFlashEl.classList.remove('hit');
+  }
+  updateLatch(dt, ev, active);
+  if (swingAnimT > 0) swingAnimT -= dt;
+  bobPhase += dt * (Math.hypot(player.vel[0], player.vel[2]) > 0.6 ? 9 : 3);
+
   const aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
   const proj = mat4Perspective((70 * Math.PI) / 180, aspect, 0.08, 480);
   const view = viewMatrix(eye, player.yaw, player.pitch);
   const players = isMP ? buildRemotePlayerList(now) : null;
+  const selfId = isMP ? myId : LOCAL_ID;
+  // Don't draw a mob latched to the local player — the veil stands in for it.
+  const renderMobs = mobData.list.filter((m) => m.latchedTo !== selfId);
   renderer.draw({
     proj,
     view,
@@ -314,10 +403,16 @@ requestAnimationFrame(function frame(now) {
     fogColor,
     fogNear,
     fogFar,
-    highlight: target ? [target.x, target.y, target.z] : null,
+    highlight: target && held.kind === 'block' ? [target.x, target.y, target.z] : null,
     players,
+    mobs: renderMobs,
+    projectiles: mobData.projectiles,
+    hazards: mobData.hazards,
+    ambient: daylight,
+    viewmodel: buildViewmodel(),
   });
   if (isMP) updateNameplates(proj, view);
+  updateMobBars(mobData.list, proj, view);
 
   debugTimer -= dt;
   if (debugVisible && debugTimer <= 0) {
@@ -416,25 +511,19 @@ function lerp3(a, b, t) {
 
 function buildHotbarUI() {
   const hb = document.getElementById('hotbar');
-  return HOTBAR.map((id, i) => {
+  return HOTBAR.map((entry, i) => {
     const slot = document.createElement('div');
     slot.className = 'slot';
     const icon = document.createElement('canvas');
     icon.width = icon.height = 36;
     const g = icon.getContext('2d');
     g.imageSmoothingEnabled = false;
-    const tile = BLOCKS[id].tiles.side;
-    g.drawImage(
-      atlas,
-      (tile % ATLAS_COLS) * TILE,
-      ((tile / ATLAS_COLS) | 0) * TILE,
-      TILE,
-      TILE,
-      0,
-      0,
-      36,
-      36
-    );
+    if (entry.kind === 'block') {
+      const tile = BLOCKS[entry.id].tiles.side;
+      g.drawImage(atlas, (tile % ATLAS_COLS) * TILE, ((tile / ATLAS_COLS) | 0) * TILE, TILE, TILE, 0, 0, 36, 36);
+    } else {
+      drawSwordIcon(g);
+    }
     const num = document.createElement('span');
     num.textContent = i + 1;
     slot.append(icon, num);
@@ -443,8 +532,283 @@ function buildHotbarUI() {
   });
 }
 
+// Procedural sword icon (no atlas tile): a diagonal steel blade with a guard
+// and grip, in keeping with the project's "everything generated" approach.
+function drawSwordIcon(g) {
+  g.clearRect(0, 0, 36, 36);
+  g.save();
+  g.translate(18, 18);
+  g.rotate(-Math.PI / 4);
+  // blade
+  g.fillStyle = '#cdd3da';
+  g.fillRect(-2.5, -15, 5, 20);
+  g.fillStyle = '#eef2f6';
+  g.fillRect(-2.5, -15, 2, 20); // highlight edge
+  // guard
+  g.fillStyle = '#8a6a2f';
+  g.fillRect(-7, 5, 14, 3);
+  // grip
+  g.fillStyle = '#5a3a1a';
+  g.fillRect(-2, 8, 4, 8);
+  // pommel
+  g.fillStyle = '#c9a227';
+  g.fillRect(-2.5, 15, 5, 3);
+  g.restore();
+}
+
 function updateHotbarSel() {
   slots.forEach((slot, i) => slot.classList.toggle('selected', i === selected));
+}
+
+// Build the per-frame first-person viewmodel descriptor (hand + held item).
+function buildViewmodel() {
+  const held = HOTBAR[selected];
+  const swing = swingAnimT > 0 ? 1 - swingAnimT / SWING_DUR : 0; // 0→1 across a swing
+  if (held.kind === 'tool') return { kind: 'tool', swing, bob: bobPhase };
+  return { kind: 'block', tiles: BLOCKS[held.id].tiles, swing, bob: bobPhase };
+}
+
+// --- Mobs & combat -------------------------------------------------------
+
+// Bundle the local player as an "observer" for the shared mob sim (SP).
+function makeObserver(eye, dir) {
+  return { id: LOCAL_ID, pos: player.pos, eye, yaw: player.yaw, pitch: player.pitch, dir, hp: player.hp, alive: player.hp > 0 };
+}
+
+// Per-frame mob update. SP is authoritative (runs the shared sim); MP renders
+// interpolated server snapshots. Returns the render bundle for renderer.draw.
+function updateMobs(dt, now, eye, dir, canAct) {
+  if (isMP) {
+    return { list: buildRemoteMobList(now), projectiles: mpProjectiles, hazards: mpHazards };
+  }
+  if (canAct) {
+    const observer = makeObserver(eye, dir);
+    const ctx = { dt, world, observers: [observer], dayTime, rng: Math.random, nextId: spMobId };
+    Mobs.maybeSpawn(mobs, ctx, SP_POLICY);
+    Mobs.despawnFar(mobs, [observer], 70);
+    const r = Mobs.stepMobs(mobs, hazards, projectiles, ctx);
+    for (const e of r.events) applyEvent(e);
+  }
+  return { list: mobs, projectiles, hazards };
+}
+
+function applyEvent(e) {
+  if (e.kind === 'damage' && e.playerId === LOCAL_ID) damagePlayer(e.amount, e.knock);
+  // 'latch'/'unlatch' are reflected by each mob's latchedTo, read by the veil.
+}
+
+function damagePlayer(amount, knock) {
+  if (dead) return;
+  player.hp = Math.max(0, player.hp - amount);
+  if (knock) { player.vel[0] += knock[0]; player.vel[1] += knock[1]; player.vel[2] += knock[2]; }
+  flashTimer = 0.18;
+  updateHealthUI();
+  if (player.hp <= 0) triggerDeath();
+}
+
+function triggerDeath() {
+  if (dead) return;
+  dead = true;
+  deathTimer = 0.8;
+  if (damageFlashEl) damageFlashEl.classList.add('hit');
+}
+
+function respawn() {
+  spawn(); // resets pos/vel/hp and clears `dead`
+  flashTimer = 0;
+  if (damageFlashEl) damageFlashEl.classList.remove('hit');
+  updateHealthUI();
+}
+
+// A sword swing: SP resolves the hit locally; MP sends an intent for the server
+// to validate (the server is authoritative for mob hp online).
+function doSwing(eye, dir, tool) {
+  swingAnimT = SWING_DUR; // visible swing regardless of whether a mob is hit
+  if (isMP) {
+    if (net) net.sendAttack(dir);
+    return;
+  }
+  const m = Mobs.pickAttackTarget(mobs, eye, dir, tool);
+  if (!m) return;
+  const dx = m.pos[0] - eye[0], dz = m.pos[2] - eye[2];
+  const dl = Math.hypot(dx, dz) || 1;
+  const knock = [(dx / dl) * tool.knock, 4, (dz / dl) * tool.knock];
+  const res = Mobs.hurtMob(m, tool.dmg, knock, { rng: Math.random, nextId: spMobId });
+  if (res.died) {
+    const i = mobs.indexOf(m);
+    if (i >= 0) mobs.splice(i, 1);
+    removeMobBar(m.id);
+  }
+  for (const c of res.spawned) mobs.push(c);
+}
+
+// Gloamwing latch: show the veil and let the player shake it off by turning
+// fast. Only the latched client measures the mouse deltas, so detach is decided
+// here (SP: locally; MP: tell the server, which owns the mob).
+function updateLatch(dt, ev, active) {
+  const latched = isLocallyLatched();
+  if (latchVeilEl) latchVeilEl.classList.toggle('hidden', !latched);
+  if (!latched) { shakeAccum = 0; return; }
+  if (active) shakeAccum += Math.abs(ev.dx) + Math.abs(ev.dy);
+  shakeAccum = Math.max(0, shakeAccum - dt * 220); // slow turns don't count
+  if (shakeAccum > 1400) {
+    shakeAccum = 0;
+    detachLatch();
+  }
+}
+
+function isLocallyLatched() {
+  if (isMP) {
+    for (const rm of remoteMobs.values()) if (rm.latchedTo === myId) return true;
+    return false;
+  }
+  for (const m of mobs) if (m.latchedTo === LOCAL_ID) return true;
+  return false;
+}
+
+function detachLatch() {
+  if (isMP) {
+    if (net) net.sendShake();
+    return;
+  }
+  for (const m of mobs) {
+    if (m.latchedTo === LOCAL_ID) {
+      m.latchedTo = -1;
+      m.state = 'flee';
+      m.abilityCd = Math.max(m.abilityCd, 2.5);
+      m.vel[1] = 6;
+    }
+  }
+}
+
+function buildHealthUI() {
+  if (!healthBarEl) return [];
+  healthBarEl.innerHTML = '';
+  const pips = [];
+  for (let i = 0; i < Math.ceil(player.maxHp / 2); i++) { // 2 hp per heart
+    const h = document.createElement('div');
+    h.className = 'heart';
+    healthBarEl.appendChild(h);
+    pips.push(h);
+  }
+  return pips;
+}
+
+function updateHealthUI() {
+  const hp = Math.max(0, player.hp);
+  for (let i = 0; i < healthPips.length; i++) {
+    const f = hp - i * 2;
+    healthPips[i].className = 'heart' + (f >= 2 ? '' : f >= 1 ? ' half' : ' empty');
+  }
+}
+
+// Mob health bars projected over each mob (reuses the nameplate projection).
+function updateMobBars(list, proj, view) {
+  const selfId = isMP ? myId : LOCAL_ID;
+  const seen = new Set();
+  for (const m of list) {
+    if (m.hp == null || m.maxHp == null || m.latchedTo === selfId) continue;
+    seen.add(m.id);
+    let bar = mobBars.get(m.id);
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.className = 'mobbar';
+      const fill = document.createElement('div');
+      fill.className = 'fill';
+      bar.appendChild(fill);
+      if (mobPlatesEl) mobPlatesEl.appendChild(bar);
+      mobBars.set(m.id, bar);
+    }
+    const type = Mobs.MOB_TYPES[m.type];
+    const top = [m.pos[0], m.pos[1] + type.h * (m.scale || 1) + 0.35, m.pos[2]];
+    const p = renderer.projectPoint(top, proj, view);
+    if (p.visible && m.hp < m.maxHp) {
+      bar.style.display = 'block';
+      bar.style.left = p.x + 'px';
+      bar.style.top = p.y + 'px';
+      bar.firstChild.style.width = Math.max(0, Math.min(1, m.hp / m.maxHp)) * 100 + '%';
+    } else {
+      bar.style.display = 'none';
+    }
+  }
+  for (const id of [...mobBars.keys()]) if (!seen.has(id)) removeMobBar(id);
+}
+
+function removeMobBar(id) {
+  const b = mobBars.get(id);
+  if (b && b.parentNode) b.parentNode.removeChild(b);
+  mobBars.delete(id);
+}
+
+// MP: reconcile the authoritative mob list into interpolated render state.
+function syncMobs(list, proj) {
+  const t = performance.now();
+  const seen = new Set();
+  for (const s of list) {
+    seen.add(s.id);
+    let rm = remoteMobs.get(s.id);
+    if (!rm) {
+      rm = {
+        prev: { pos: s.pos.slice(), yaw: s.yaw || 0 },
+        next: { pos: s.pos.slice(), yaw: s.yaw || 0 },
+        tPrev: t, tNext: t,
+        cur: { pos: s.pos.slice(), yaw: s.yaw || 0 },
+      };
+      remoteMobs.set(s.id, rm);
+    } else {
+      rm.prev = { pos: rm.cur.pos.slice(), yaw: rm.cur.yaw };
+      rm.next = { pos: s.pos.slice(), yaw: s.yaw || 0 };
+      rm.tPrev = t;
+      rm.tNext = t + 66;
+    }
+    rm.type = s.type;
+    rm.hp = s.hp;
+    rm.maxHp = s.maxHp;
+    rm.scale = s.scale;
+    rm.gen = s.gen;
+    rm.latchedTo = s.latchedTo;
+    rm.flags = s.flags || {};
+    rm.anim = s.anim || 0;
+  }
+  for (const id of [...remoteMobs.keys()]) {
+    if (!seen.has(id)) { remoteMobs.delete(id); removeMobBar(id); }
+  }
+  mpProjectiles = proj || [];
+}
+
+function syncHazards(list) {
+  mpHazards = list || [];
+}
+
+function buildRemoteMobList(now) {
+  const list = [];
+  for (const [id, rm] of remoteMobs) {
+    const span = Math.max(1, rm.tNext - rm.tPrev);
+    const a = Math.min(1, (now - rm.tPrev) / span);
+    const pos = [
+      rm.prev.pos[0] + (rm.next.pos[0] - rm.prev.pos[0]) * a,
+      rm.prev.pos[1] + (rm.next.pos[1] - rm.prev.pos[1]) * a,
+      rm.prev.pos[2] + (rm.next.pos[2] - rm.prev.pos[2]) * a,
+    ];
+    rm.cur = { pos, yaw: lerpAngle(rm.prev.yaw, rm.next.yaw, a) };
+    list.push({
+      id, type: rm.type, pos, yaw: rm.cur.yaw, anim: rm.anim, scale: rm.scale,
+      flags: rm.flags, hp: rm.hp, maxHp: rm.maxHp, latchedTo: rm.latchedTo,
+    });
+  }
+  return list;
+}
+
+function onHurt(m) {
+  player.hp = m.hp;
+  if (m.knock) { player.vel[0] += m.knock[0]; player.vel[1] += m.knock[1]; player.vel[2] += m.knock[2]; }
+  flashTimer = 0.18;
+  updateHealthUI();
+  if (player.hp <= 0) triggerDeath();
+}
+
+function onDeath() {
+  triggerDeath();
 }
 
 // --- Multiplayer ---------------------------------------------------------
@@ -466,6 +830,10 @@ function setupNet() {
   net.on('edit', (m) => applyRemoteEdit(m.x, m.y, m.z, m.id));
   net.on('chat', (m) => addChat(m.name, m.text));
   net.on('time', (m) => snapTime(m.time));
+  net.on('mobs', (m) => syncMobs(m.list, m.proj));
+  net.on('hazards', (m) => syncHazards(m.list));
+  net.on('hurt', (m) => onHurt(m));
+  net.on('death', () => onDeath());
   net.connect();
 }
 
@@ -483,11 +851,23 @@ function onWelcome(m) {
   for (const [x, y, z, id] of m.edits) pendingEdits.set(x + ',' + y + ',' + z, id);
   spawn(); // generates spawn chunks through generateChunkWithEdits -> edits applied
   dayTime = m.time;
+  if (typeof m.hp === 'number') player.hp = m.hp;
+  updateHealthUI();
+  clearRemoteMobs();
+  if (m.mobs) syncMobs(m.mobs, []);
+  mpHazards = m.hazards || [];
   clearRemotePlayers();
   for (const p of m.players) addRemotePlayer(p);
   syncSeedUI();
   ready = true;
   setNetStatus('');
+}
+
+function clearRemoteMobs() {
+  remoteMobs.clear();
+  for (const id of [...mobBars.keys()]) removeMobBar(id);
+  mpHazards = [];
+  mpProjectiles = [];
 }
 
 function addRemotePlayer(p) {

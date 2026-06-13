@@ -65,6 +65,73 @@ html, body {
   text-shadow: 1px 1px 0 #000;
 }
 
+/* Player health: a row of heart pips just above the hotbar. */
+#healthbar {
+  position: fixed;
+  left: 50%;
+  bottom: 60px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 3px;
+  pointer-events: none;
+  z-index: 5;
+}
+.heart {
+  width: 16px;
+  height: 16px;
+  background: #c0392b;
+  border: 1px solid rgba(0, 0, 0, 0.6);
+  transform: rotate(45deg);
+  box-shadow: inset -2px -2px 0 rgba(0, 0, 0, 0.25);
+}
+.heart.half { background: linear-gradient(135deg, #c0392b 50%, #3a1414 50%); }
+.heart.empty { background: #3a1414; }
+
+/* Hit feedback: a brief red wash over the whole screen. */
+#damageflash {
+  position: fixed;
+  inset: 0;
+  background: #b01010;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.45s ease-out;
+  z-index: 7;
+}
+#damageflash.hit { opacity: 0.42; transition: opacity 0.04s; }
+
+/* Gloamwing latch: a translucent wing veil over the view until shaken off. */
+#latchveil {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 8;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(0, 0, 0, 0) 24%, rgba(70, 100, 150, 0.5) 60%, rgba(40, 60, 110, 0.78) 100%);
+  animation: latch-shudder 0.18s infinite alternate;
+}
+@keyframes latch-shudder {
+  from { transform: translate(-4px, 2px); }
+  to { transform: translate(4px, -2px); }
+}
+
+/* Mob health bars (projected over mobs, like nameplates). */
+#mobplates {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 5;
+}
+.mobbar {
+  position: absolute;
+  width: 42px;
+  height: 5px;
+  transform: translate(-50%, -100%);
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(0, 0, 0, 0.8);
+}
+.mobbar .fill { height: 100%; background: #d33; }
+
 #debug {
   position: fixed;
   top: 8px;
@@ -178,6 +245,11 @@ html, body {
   border: 2px solid #3f8eae;
 }
 #mp-controls button:hover { background: #34769a; }
+#mp-controls #mp-create {
+  background: #2a7d2a;
+  border-color: #3fae3f;
+}
+#mp-controls #mp-create:hover { background: #34963a; }
 
 /* In-world multiplayer HUD: nameplates, chat, connection banner. */
 #nameplates {

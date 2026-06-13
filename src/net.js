@@ -76,4 +76,16 @@ export class Net {
   sendChat(text) {
     this.send({ t: 'chat', text });
   }
+
+  // Melee swing intent: the server validates range/cone against its mobs and is
+  // authoritative for the hit (clients never mutate mob hp in multiplayer).
+  sendAttack(dir) {
+    this.send({ t: 'attack', dir: [dir[0], dir[1], dir[2]] });
+  }
+
+  // "I shook the latched Gloamwing off" — the latched client measures the
+  // turn speed (only it has the mouse deltas), the server trusts the report.
+  sendShake() {
+    this.send({ t: 'shake' });
+  }
 }
